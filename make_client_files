@@ -1,0 +1,109 @@
+#!/bin/bash
+
+####必須設定####################################################################
+#VPNサーバのホスト名もしくはIPアドレス(クライアントが接続時に使用する方)
+HOST_ADDR=140.227.39.61
+ 
+#Enter pass phrase for ${RSA_DIR}/pki/private/ca.key
+CA_PASSPHRASE=Nttpc123-
+ 
+#openvpnのインストールディレクトリ
+VPN_DIR=/etc/openvpn
+ 
+#easyrsa3のインストールディレクトリ
+RSA_DIR=$VPN_DIR/easyrsa3
+
+#clientのインストールディレクトリ
+CCD_DIR=$VPN_DIR/ccd
+
+HOST_PRIFIX=TH
+COUNT=1
+CLIENT_ZIP_DIR="_client_files" 
+ 
+################################################################################
+cd ${VPN_DIR}
+SEGMENT_VALUE=0
+OVPN_REMOTE="remote $HOST_ADDR 443"
+OVPN_CA="ca $HOST_ADDR.ca.crt"
+TARGET_DIR="$CLIENT_ZIP_DIR/config"
+if [ -e $TARGET_DIR ]; then
+    echo "File exist"
+    exit
+fi
+mkdir -p ${TARGET_DIR}
+ 
+for loop in `seq 1 2`; do
+    for i in `seq 1 63`; do
+	
+	client_name="$HOST_PRIFIX$(printf "%06d" $COUNT)@$HOST_ADDR"
+        OVPN_cert="cert $HOST_PRIFIX$(printf "%06d" $COUNT).user.crt"
+        OVPN_key="key  $HOST_PRIFIX$(printf "%06d" $COUNT).user.key"
+ 
+	# 固定IPアドレス割当て
+	echo ifconfig-push 172.31.${SEGMENT_VALUE}.$(($i*4+1)) 172.31.${SEGMENT_VALUE}.$(($i*4+2)) \
+        	> ${CCD_DIR}/${client_name}
+ 
+	# クライアント証明書・秘密鍵作成
+	cd ${RSA_DIR}
+	expect -c "
+		set timeout 5
+		spawn ./easyrsa build-client-full ${client_name} nopass
+		expect \"Enter pass phrase for ${RSA_DIR}/pki/private/ca.key:\"
+		send \"${CA_PASSPHRASE}\n\"
+		expect eof
+		catch wait result
+		set STATUS [ lindex $result 3 ]
+		exit $STATUS
+	"
+ 
+	# ファイル回収/接続設定ファイル生成
+	cd ${VPN_DIR}
+ 
+	mkdir ${TARGET_DIR}/${client_name}
+ 
+	keyfile=${RSA_DIR}/pki/private/${client_name}.key
+	while [ ! -e ${keyfile} ]
+	do
+		echo pki key waiting...
+		sleep 1
+	done
+	cp ${keyfile} ${TARGET_DIR}/${client_name}/${HOST_PRIFIX}$(printf "%06d" $COUNT).user.key
+ 
+	crtfile=${RSA_DIR}/pki/issued/${client_name}.crt
+	while [ ! -e ${crtfile} ]
+	do
+		echo pki crt waiting...
+		sleep 1
+	done
+	cp ${crtfile} ${TARGET_DIR}/${client_name}/${HOST_PRIFIX}$(printf "%06d" $COUNT).user.crt
+ 
+	cp ca.crt ${TARGET_DIR}/${client_name}/${HOST_ADDR}.ca.crt
+ 
+	ovpn=${TARGET_DIR}/${client_name}/${client_name}.ovpn
+	echo "client" > ${ovpn}
+        echo "dev tun"  >> ${ovpn}
+        echo "proto tcp"  >> ${ovpn}
+        echo $OVPN_REMOTE  >> ${ovpn}
+        echo "resolv-retry infinite"  >> ${ovpn}
+        echo "nobind"  >> ${ovpn}
+        echo "persist-key"  >> ${ovpn}
+        echo "persist-tun"  >> ${ovpn}
+        echo $OVPN_CA  >> ${ovpn}
+        echo $OVPN_cert  >> ${ovpn}
+        echo $OVPN_key  >> ${ovpn}
+        echo "auth-user-pass"  >> ${ovpn}
+        echo "cipher AES-256-CBC"  >> ${ovpn}
+        echo "auth SHA1"  >> ${ovpn}
+        echo "comp-lzo"  >> ${ovpn}
+        echo "route-delay 4"  >> ${ovpn}
+        echo "verb 3"  >> ${ovpn}
+        echo "reneg-sec 0"  >> ${ovpn}
+
+	COUNT=`expr $COUNT + 1`
+        cd $CLIENT_ZIP_DIR
+        zip ${client_name}.zip -r config/${client_name}
+        cd ${VPN_DIR}
+    done
+
+    SEGMENT_VALUE=`expr $SEGMENT_VALUE + 1`
+done
